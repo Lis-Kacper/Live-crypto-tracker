@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Crypto Pro Terminal + Tracker</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #050505;
+            overflow: hidden;
+            font-family: 'JetBrains Mono', 'Consolas', monospace;
+            color: #fff;
+            cursor: crosshair; /* Kursor celownika na całej stronie */
+        }
+
+        /* TŁO: Siatka techniczna */
+        body::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+            z-index: -1;
+        }
+
+        canvas { display: block; }
+
+        /* --- PANEL GŁÓWNY --- */
+        #ticker-panel {
+            position: absolute;
+            top: 30px;
+            left: 30px;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.85);
+            border-left: 4px solid #555;
+            backdrop-filter: blur(8px);
+            z-index: 10;
+            box-shadow: 0 0 25px rgba(0,0,0,0.6);
+            min-width: 280px;
+            border-radius: 0 8px 8px 0;
+            pointer-events: auto; /* Panel musi reagować na kliknięcia */
+        }
+
+        /* --- SELEKTOR WALUT --- */
+        .crypto-selector {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 15px;
+        }
+
+        .crypto-btn {
+            background: transparent;
+            border: 1px solid #333;
+            color: #666;
+            padding: 4px 8px;
+            font-family: inherit;
+            font-size: 0.7rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.2s;
+            border-radius: 4px;
+        }
+
+        .crypto-btn:hover { border-color: #888; color: #fff; }
+
+        .crypto-btn.active {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            border-color: #fff;
+            box-shadow: 0 0 8px rgba(255,255,255,0.2);
+        }
+
+        /* --- CENA I OPIS --- */
+        .symbol-label { font-size: 0.8rem; color: #888; letter-spacing: 2px; margin-bottom: 5px; }
+        
+        #price {
+            font-size: 2.5rem;
+            font-weight: 700;
+            line-height: 1;
+            font-variant-numeric: tabular-nums;
+            margin-bottom: 15px;
+        }
+
+        /* --- KONTROLKI CZASU --- */
+        .time-controls {
+            display: flex;
+            gap: 10px;
+            border-top: 1px solid #333;
+            padding-top: 15px;
+        }
+
+        .time-btn {
+            background: transparent;
+            border: 1px solid #444;
+            color: #888;
+            padding: 5px 12px;
+            font-family: inherit;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: 0.3s;
+            text-transform: uppercase;
+        }
+
+        .time-btn:hover { border-color: #fff; color: #fff; }
+
+        .time-btn.active {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: #00ff9d;
+            color: #00ff9d;
+            box-shadow: 0 0 10px rgba(0, 255, 157, 0.2);
+        }
+
+        .border-bear .time-btn.active {
+            border-color: #ff0055;
+            color: #ff0055;
+            box-shadow: 0 0 10px rgba(255, 0, 85, 0.2);
+        }
+
+        /* --- LOADING OVERLAY --- */
+        #loader {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: #00ff9d;
+            font-size: 1.5rem;
+            font-weight: bold;
+            z-index: 20;
+            pointer-events: none;
+            transition: opacity 0.3s;
+            text-shadow: 0 0 20px #00ff9d;
+            letter-spacing: 3px;
+        }
+
+        /* KOLORY TRENDU */
+        .bullish { color: #00ff9d; text-shadow: 0 0 20px rgba(0, 255, 157, 0.4); }
+        .bearish { color: #ff0055; text-shadow: 0 0 20px rgba(255, 0, 85, 0.4); }
+        .border-bull { border-color: #00ff9d !important; }
+        .border-bear { border-color: #ff0055 !important; }
+
+    </style>
+</head>
+<body>
+
+    <div id="ticker-panel" class="border-bull">
+        <div class="crypto-selector">
+            <button class="crypto-btn active" onclick="changeAsset('BTCUSDT')">BTC</button>
+            <button class="crypto-btn" onclick="changeAsset('ETHUSDT')">ETH</button>
+            <button class="crypto-btn" onclick="changeAsset('SOLUSDT')">SOL</button>
+            <button class="crypto-btn" onclick="changeAsset('XRPUSDT')">XRP</button>
+            <button class="crypto-btn" onclick="changeAsset('DOGEUSDT')">DOGE</button>
+        </div>
+
+        <div class="symbol-label"><span id="symbol-text">BTC</span> / USDT <span id="view-label">// 1H VIEW</span></div>
+        <div id="price">LOADING...</div>
+        
+        <div class="time-controls">
+            <button class="time-btn" onclick="changeTimeframe('15m')">15M</button>
+            <button class="time-btn active" onclick="changeTimeframe('1h')">1H</button>
+            <button class="time-btn" onclick="changeTimeframe('24h')">24H</button>
+        </div>
+    </div>
+
+    <div id="loader">INITIALIZING SYSTEM...</div>
+
+    <canvas id="chart"></canvas>
+
+    <script>
+        const canvas = document.getElementById('chart');
+        const ctx = canvas.getContext('2d');
+        const priceEl = document.getElementById('price');
+        const panelEl = document.getElementById('ticker-panel');
+        const viewLabel = document.getElementById('view-label');
+        const symbolText = document.getElementById('symbol-text');
+        const loader = document.getElementById('loader');
+
+        let width, height;
+        
+        // --- MOUSE TRACKING STATE ---
+        let mouseX = 0;
+        let mouseY = 0;
+        let isHovering = false;
+
+        // Listener myszy
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouseX = e.clientX - rect.left;
+            mouseY = e.clientY - rect.top;
+            isHovering = true;
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            isHovering = false;
+        });
+
+        // --- KONFIGURACJA ---
+        const TIME_CONFIG = {
+            '15m': { interval: '1m', limit: 15, label: '// 15 MIN', tickStep: 3 },
+            '1h':  { interval: '1m', limit: 60, label: '// 1 HOUR', tickStep: 10 },
+            '24h': { interval: '15m', limit: 96, label: '// 24 HOURS', tickStep: 12 }
+        };
+
+        // --- STAN APLIKACJI ---
+        let currentSymbol = 'BTCUSDT';
+        let currentFrame = '1h';
+        let chartData = []; 
+        let currentPrice = 0;
+        let isBullish = true;
+        let ws = null;
+
+        const MARGIN_BOTTOM = 40; 
+        const MARGIN_TOP = 80;
+        
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // --- 1. ZMIANA WALUTY ---
+        function changeAsset(symbol) {
+            if (currentSymbol === symbol) return;
+            currentSymbol = symbol;
+            
+            document.querySelectorAll('.crypto-btn').forEach(btn => {
+                if(btn.innerText === symbol.replace('USDT','')) btn.classList.add('active');
+                else btn.classList.remove('active');
+            });
+            symbolText.innerText = symbol.replace('USDT','');
+            reloadChart();
+        }
+
+        // --- 2. ZMIANA CZASU ---
+        function changeTimeframe(frame) {
+            if (currentFrame === frame) return;
+            currentFrame = frame;
+            
+            document.querySelectorAll('.time-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            viewLabel.innerText = TIME_CONFIG[frame].label;
+            reloadChart();
+        }
+
+        function reloadChart() {
+            loader.style.opacity = 1;
+            loader.innerText = `LOADING ${currentSymbol.replace('USDT','')}...`;
+            if (ws) { ws.close(); ws = null; }
+            initData();
+        }
+
+        // --- 3. DANE (REST API) ---
+        async function initData() {
+            const conf = TIME_CONFIG[currentFrame];
+            try {
+                const url = `https://api.binance.com/api/v3/klines?symbol=${currentSymbol}&interval=${conf.interval}&limit=${conf.limit}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                chartData = data.map(d => ({
+                    time: d[0],
+                    price: parseFloat(d[4])
+                }));
+
+                currentPrice = chartData[chartData.length - 1].price;
+                updatePriceDisplay();
+                loader.style.opacity = 0;
+                startWebSocket();
+
+            } catch (e) {
+                console.error(e);
+                loader.innerText = "API ERROR (RETRYING...)";
+                setTimeout(initData, 2000);
+            }
+        }
+
+        // --- 4. DANE LIVE (WEBSOCKET) ---
+        function startWebSocket() {
+            const streamName = currentSymbol.toLowerCase() + '@trade';
+            ws = new WebSocket(`wss://stream.binance.com:9443/ws/${streamName}`);
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                const tradePrice = parseFloat(data.p);
+                
+                if (chartData.length === 0) return;
+
+                let lastPoint = chartData[chartData.length - 1];
+                lastPoint.price = tradePrice;
+                lastPoint.time = Date.now();
+
+                if (chartData.length > 1) {
+                    const prevPrice = chartData[chartData.length - 2].price;
+                    isBullish = tradePrice >= prevPrice;
+                }
+                currentPrice = tradePrice;
+                updatePriceDisplay();
+            };
+        }
+
+        function updatePriceDisplay() {
+            const decimals = currentPrice < 10 ? 4 : 2;
+            priceEl.innerText = `$${currentPrice.toFixed(decimals)}`;
+            priceEl.className = isBullish ? 'bullish' : 'bearish';
+            panelEl.className = isBullish ? 'border-bull' : 'border-bear';
+        }
+
+        // --- 5. RENDEROWANIE (Główna Pętla) ---
+        function draw() {
+            ctx.clearRect(0, 0, width, height);
+            if (chartData.length > 1) {
+                renderChart();
+            }
+            requestAnimationFrame(draw);
+        }
+
+        function renderChart() {
+            // A. Skalowanie Y
+            let minPrice = Infinity;
+            let maxPrice = -Infinity;
+            chartData.forEach(p => {
+                if (p.price < minPrice) minPrice = p.price;
+                if (p.price > maxPrice) maxPrice = p.price;
+            });
+            
+            const range = maxPrice - minPrice;
+            const safeRange = range === 0 ? currentPrice * 0.001 : range;
+            const padding = safeRange * 0.2; 
+            const yMin = minPrice - padding;
+            const yMax = maxPrice + padding;
+
+            const getY = (price) => {
+                const pct = (price - yMin) / (yMax - yMin);
+                return (height - MARGIN_BOTTOM) - (pct * (height - MARGIN_BOTTOM - MARGIN_TOP));
+            };
+            
+            const stepX = width / (chartData.length - 1);
+            const globalTrendUp = chartData[chartData.length-1].price >= chartData[0].price;
+            const primaryColor = globalTrendUp ? '#00ff9d' : '#ff0055';
+
+            // B. Rysowanie Linii Wykresu
+            ctx.beginPath();
+            chartData.forEach((point, i) => {
+                const x = i * stepX;
+                const y = getY(point.price);
+                if (i === 0) ctx.moveTo(x, y);
+                else {
+                    const prevX = (i - 1) * stepX;
+                    const prevY = getY(chartData[i - 1].price);
+                    const cx = (prevX + x) / 2;
+                    ctx.bezierCurveTo(cx, prevY, cx, y, x, y);
+                }
+            });
+
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = primaryColor;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.stroke();
+
+            // Gradient pod wykresem
+            ctx.lineTo(width, height);
+            ctx.lineTo(0, height);
+            ctx.closePath();
+            const grad = ctx.createLinearGradient(0, 0, 0, height);
+            grad.addColorStop(0, globalTrendUp ? 'rgba(0, 255, 157, 0.15)' : 'rgba(255, 0, 85, 0.15)');
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = grad;
+            ctx.fill();
+
+            // C. Oś X i Etykiety
+            ctx.fillStyle = '#666';
+            ctx.font = '10px JetBrains Mono';
+            ctx.textAlign = 'center';
+            ctx.beginPath();
+            ctx.moveTo(0, height - MARGIN_BOTTOM);
+            ctx.lineTo(width, height - MARGIN_BOTTOM);
+            ctx.strokeStyle = '#333';
+            ctx.stroke();
+
+            const tickStep = TIME_CONFIG[currentFrame].tickStep;
+            chartData.forEach((point, i) => {
+                if (i % tickStep === 0 || i === chartData.length - 1) {
+                    const x = i * stepX;
+                    ctx.beginPath();
+                    ctx.moveTo(x, height - MARGIN_BOTTOM);
+                    ctx.lineTo(x, height - MARGIN_BOTTOM + 5);
+                    ctx.strokeStyle = '#555';
+                    ctx.stroke();
+
+                    const date = new Date(point.time);
+                    const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    
+                    if (i === chartData.length - 1 && x > width - 30) ctx.textAlign = 'right';
+                    else if (i === 0) ctx.textAlign = 'left';
+                    else ctx.textAlign = 'center';
+                    ctx.fillText(timeStr, x, height - MARGIN_BOTTOM + 20);
+                }
+            });
+
+            // --- F. MOUSE TRACKER (NOWOŚĆ) ---
+            
+            // Punkt "Live" na końcu zawsze jest widoczny, chyba że najeżdżamy myszką (wtedy tracker przejmuje rolę)
+            const lastX = width;
+            const lastY = getY(currentPrice);
+
+            if (!isHovering) {
+                // Rysuj standardowy puls na końcu
+                ctx.beginPath();
+                ctx.arc(lastX, lastY, 4, 0, Math.PI*2);
+                ctx.fillStyle = '#fff';
+                ctx.fill();
+                
+                const time = Date.now() / 1000;
+                const radius = 6 + Math.sin(time * 10) * 4;
+                ctx.beginPath();
+                ctx.arc(lastX, lastY, radius, 0, Math.PI*2);
+                ctx.fillStyle = primaryColor;
+                ctx.globalAlpha = 0.4;
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
+                
+                ctx.beginPath();
+                ctx.setLineDash([2, 4]);
+                ctx.moveTo(0, lastY);
+                ctx.lineTo(width, lastY);
+                ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+                ctx.stroke();
+                ctx.setLineDash([]);
+            } else {
+                // --- TRACKER LOGIC ---
+                // 1. Znajdź najbliższy punkt danych względem myszki X
+                let index = Math.round(mouseX / stepX);
+                // Ogranicz indeks do zakresu tablicy
+                if (index < 0) index = 0;
+                if (index >= chartData.length) index = chartData.length - 1;
+
+                const point = chartData[index];
+                const px = index * stepX;
+                const py = getY(point.price);
+
+                // 2. Rysuj Crosshair (Celownik)
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                ctx.setLineDash([4, 4]);
+                ctx.lineWidth = 1;
+
+                // Pionowa
+                ctx.beginPath();
+                ctx.moveTo(px, 0);
+                ctx.lineTo(px, height - MARGIN_BOTTOM);
+                ctx.stroke();
+
+                // Pozioma
+                ctx.beginPath();
+                ctx.moveTo(0, py);
+                ctx.lineTo(width, py);
+                ctx.stroke();
+                ctx.setLineDash([]); // Reset
+
+                // 3. Kropka na przecięciu
+                ctx.beginPath();
+                ctx.arc(px, py, 5, 0, Math.PI*2);
+                ctx.fillStyle = '#fff';
+                ctx.fill();
+                ctx.strokeStyle = primaryColor;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // 4. Floating Tooltip (Dymek z ceną)
+                const date = new Date(point.time);
+                const tStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                const decimals = currentPrice < 10 ? 4 : 2;
+                const pStr = `$${point.price.toFixed(decimals)}`;
+
+                // Ustawienia dymku
+                ctx.font = '12px JetBrains Mono';
+                const padding = 10;
+                const boxWidth = 140;
+                const boxHeight = 50;
+                let boxX = px + 15; // Domyślnie po prawej
+                let boxY = py - 25;
+
+                // Sprawdź czy dymek nie wychodzi poza ekran
+                if (boxX + boxWidth > width) {
+                    boxX = px - boxWidth - 15; // Przenieś na lewo
+                }
+                if (boxY < MARGIN_TOP) boxY = MARGIN_TOP + 10;
+
+                // Tło dymku
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.9)';
+                ctx.strokeStyle = primaryColor;
+                ctx.lineWidth = 1;
+                
+                // Rysuj prostokąt z zaokrąglonymi rogami (uproszczony)
+                ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+                ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+                // Tekst w dymku
+                ctx.fillStyle = '#aaa'; // Kolor czasu
+                ctx.textAlign = 'left';
+                ctx.fillText(tStr, boxX + padding, boxY + 20);
+
+                ctx.fillStyle = '#fff'; // Kolor ceny
+                ctx.font = 'bold 14px JetBrains Mono';
+                ctx.fillText(pStr, boxX + padding, boxY + 40);
+            }
+        }
+
+        initData();
+        draw();
+
+    </script>
+</body>
+</html>
